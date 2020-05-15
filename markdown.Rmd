@@ -102,7 +102,7 @@ frm_monitors <- data.frame(
   t_popblack=shp_monitors@data$TRA_POPBLA, # From census tract level: % of population black or african american
   t_pophisp=shp_monitors@data$TRA_POPHIS # From census tract level: % of popylation of hispanic or latino origin
 )
-geo_monitors_pm25 <- as.geodata(frm_monitors,covar.col=3)
+geo_monitors_pm25 <- as.geodata(frm_monitors,coords.col = 1:2, covar.col=4:16)
 ```
 
 Check for duplicate monitor locations:
@@ -159,16 +159,12 @@ frm_predictions_filtered <- frm_predictions[frm_predictions$p_elev != '-9999',]
 
 Convert dataframe to geodata:
 ```{r data_predictions_convert_geo}
-geo_predictions_elev <- as.geodata(frm_predictions_filtered,covar.col=3)
-geo_predictions_dens <- as.geodata(frm_predictions_filtered,covar.col=5)
-geo_predictions_dens$data <- frm_predictions_filtered$c_popden
-geo_predictions_pove <- as.geodata(frm_predictions_filtered,covar.col=6)
-geo_predictions_pove$data <- frm_predictions_filtered$c_poppov
+geo_predictions <- as.geodata(frm_predictions_filtered,coords.col = 1:2, covar.col=3:9)
 ```
 
 Check for duplicate prediction locations:
 ```{r data_predictions_duplicates}
-dup.coords(geo_predictions_elev)
+dup.coords(geo_predictions)
 ```
 
 Summary table on a sample of 9,999 values:
@@ -177,7 +173,7 @@ isFALSE <- function(x) { identical(x,FALSE) }
 ```
 ```{r data_predictions_summary, results='asis', warning=FALSE, error=FALSE}
 st_css()
-frm_predictions_sample <- frm_predictions_filtered[sample(nrow(frm_predictions_filtered), 9999), ]
+frm_predictions_sample <- frm_predictions_filtered[sample(nrow(frm_predictions_filtered), 999), ]
 print(dfSummary(frm_predictions_sample, plain.ascii = FALSE, graph.magnif = 0.85), max.distinct.values = 5, max.string.width=15, method = "render")
 ```
 
@@ -188,7 +184,7 @@ print(dfSummary(frm_predictions_sample, plain.ascii = FALSE, graph.magnif = 0.85
 
 # C. Exploratory analysis 
 
-## Quick overview of PM2.5 monitors data
+## Large-scale variations
 
 Ploting monitors values:
 ```{r data_monitors_plot, results='hide', fig.align='center'}
@@ -225,9 +221,23 @@ var_monitors_pm25.dot <- variog(geo_monitors_pm25)
 names(var_monitors_pm25.dot)
 max <- var_monitors_pm25.dot$max.dist
 var_monitors_pm25.dot<-variog(geo_monitors_pm25,max.dist=max/2) #restricting to half the actual maximum distance
+
 plot(var_monitors_pm25.dot,xlab="Distance (meters)",ylab="Semivariogram",pty="m", pch=16, ylim=c(0,11))
 title("Semivariogram of PM2.5 Data\n(restricted < 1/2 max distance)")
 footnote('Figure 7')
+```
+
+# D. Modelling
+
+## Ordinary Kriging (OK)
+
+### Ordinary Kriging - Semivariogram adjustments (WLS & MLE)
+
+Adjust a model to the semivariogram form the PM2.5 monitors data: 
+```{r ok_variogram_adj, results='hide', fig.align='center'}
+plot(var_monitors_pm25.dot,xlab="Distance (meters)",ylab="Semivariogram",pty="m", pch=16, ylim=c(0,11))
+title("Semivariogram of PM2.5 Data\n(restricted < 1/2 max distance)")
+footnote('Figure 8')
 
 # Adjust semivariogram model
 model<-"exponential" #"exponential" #"spherical" #"gaussian"
@@ -270,87 +280,39 @@ nug.WLS <- 0 #c(0,0.2,0.4,0.6,0.8,1)
 psill.WLS<-sill.WLS-nug.WLS
 var_monitors_pm25.fit.WLS<-variofit(var_monitors_pm25.dot,ini.cov.pars=c(psill.WLS,rang.WLS),cov.model=model,nugget=nug.WLS)
 
-lines(var_monitors_pm25.fit.MLE,col="blue")
-lines(var_monitors_pm25.fit.WLS,col="red")
+lines(var_monitors_pm25.fit.MLE,col="blue",lty=2)
+lines(var_monitors_pm25.fit.WLS,col="red",lty=4)
 
-legend(4.5e5,3,legend=c("MLE","WLS"),lty=1:1, col=c("blue","red"))
+legend(4.5e5,3,legend=c("MLE","WLS"),lty=2:4, col=c("blue","red"))
 ```
+
 We tested a number of starting parameters to fit the variogram model and ended up with the value:
+
 * model: "exponential"
 * start values: rang: 0.8e+05 - sill: 10.0 - nug: 0.0
 * values adjusted by MLE: rang: 0.8000e+05 - sill: 8.5138 - nug: 0.3328
 * values adjusted by WLS: rang: 0.7861e+05 - sill: 9.3534 - nug: 0.0000
+
 The MLE adjustement is more heavily affected by the values at larger distance (>500km) than the WLS adjustment.
 
-## Large-scale variations
+## Universal Kriging (UK)
 
-Find out the maximum and minium extents of our data to create a grid of locations to predict at
-```{r ok_grid, results='hide', warning=FALSE}
-x_min <- min(area_california[,1])
-x_max <- max(area_california[,1])
-y_min <- min(area_california[,2])
-y_max <- max(area_california[,2])
+### Universal Kriging - Linear Models
 
-b_grid1<-expand.grid(easting=seq(x_min-1000,x_max+1000,len=100),northing=seq(y_min-10000,y_max+1000,len=100))
-b_grid2<-pip(b_grid1,area_california)
-frm_predictions_grid<- as.data.frame(b_grid2)
-```
+#### Covariates selection:
 
-Plot to make sure that the layers all overlay nicely:
-```{r ok_check, results='hide', fig.align='center'}
-plot(shp_california)
-points(frm_predictions_grid, col="blue", pch='.')
-points(shp_monitors, col = 'red', pch=1)
-title("Layers check")
-footnote('Figure 8')
-```
+Models generation:
 
-Predict values:
-```{r ok_predict, results='hide', fig.align='center'}
-predictions.OK.WLS<-krige.conv(geo_monitors_pm25,locations=frm_predictions_grid,krige=krige.control(obj.model=var_monitors_pm25.fit.WLS))
-```
-
-```{r ok_plot_predict, fig.show="hold", out.width="50%", message=FALSE}
-# Visualize the Ordinary Kriging
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
-  geom_tile(aes(fill=predictions.OK.WLS$predict)) +   # fill the grid with the predictions.OK$predict values
-  coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
-  scale_fill_gradient(low = "white", high="red", limits=c(3,16)) + # set the color scale to range from red to yellow
-  geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
-  geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
-  ggtitle('Ordinary Kriged Predictions') + # add a title
-  theme(plot.title = element_text(hjust = 0.5))
-footnote('Figure 9')
-# Visualize the Ordinary Kriging errors
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
-  geom_tile(aes(fill=sqrt(predictions.OK.WLS$krige.var))) +   # fill the grid with the krige.ok$krige.var values
-  coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
-  scale_fill_gradient(low = "white", high="orange", limits=c(0,3.5)) + # set the color scale to range from red to yellow
-  geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
-  geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
-  ggtitle('Ordinary Kriged Standard Errors') + # add a title
-  theme(plot.title = element_text(hjust = 0.5))
-footnote('Figure 10')
-```
-
-
-# D. Modelling
-
-## Linear Models
-
-Generation of models:
 ```{r, results='hide', fig.align='center', message=FALSE}
 linear_model_lc1000 <-lm(pm25~lc_1000,data=frm_monitors)
 linear_model_lc100 <-lm(pm25~lc_100,data=frm_monitors)
 linear_model_lvlcounty <-lm(pm25~c_popden+c_poppov+c_popblack+c_pophisp,data=frm_monitors)
 linear_model_lvltract <-lm(pm25~t_popden+t_poppov+t_popblack+t_pophisp,data=frm_monitors)
-
-linear_model_1 <-lm(pm25~p_elev+p_coast+p_wfire+lc_1000+c_popden+c_poppov+c_popblack+c_pophisp,data=frm_monitors)
-linear_model_2 <-lm(pm25~p_elev+p_coast+lc_1000+c_popden+c_poppov,data=frm_monitors)
-linear_model_3 <-lm(pm25~p_elev+p_coast+lc_1000+c_popblack+c_pophisp,data=frm_monitors)
+linear_model_p_wfire <-lm(pm25~p_wfire,data=frm_monitors)
+linear_model_p_coast <-lm(pm25~p_coast,data=frm_monitors)
 ```
 
-Covariates selection:
+Landcover resolution: 1,000m2 vs 100m2
 
 ::: {#model_lc_coefs}
 ```{r model_lc_coefs, message=FALSE, warning=FALSE}
@@ -362,9 +324,10 @@ export_summs(linear_model_lc1000,linear_model_lc100, error_format = "[{conf.low}
 :::
 ```{js echo=FALSE}
 $("#model_lc_coefs").first().children().next().before('<center style="font-size:1em;font-weight:bold;">Landcover 1,000m2 vs 100m2</center><br>')
-$("#model_lc_coefs").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 11</p>");
+$("#model_lc_coefs").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 9</p>");
 ```
 
+Administrative level for population data (density, poverty, black, hispanic): County level vs Census Tract level
 
 ::: {#model_lvl_coefs}
 ```{r model_lvl_coefs, message=FALSE, warning=FALSE}
@@ -375,7 +338,31 @@ export_summs(linear_model_lvlcounty,linear_model_lvltract, error_format = "[{con
 :::
 ```{js echo=FALSE}
 $("#model_lvl_coefs").first().children().next().before('<center style="font-size:1em;font-weight:bold;">Level County vs Census Tract</center><br>')
-$("#model_lvl_coefs").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 12</p>");
+$("#model_lvl_coefs").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 10</p>");
+```
+
+Wildfire and Coast Distance covariates
+
+::: {#model_p_coefs}
+```{r model_p_coefs, message=FALSE, warning=FALSE}
+{library(jtools); library(huxtable);}
+model_names <- c("Wildfire", "Coast Distance")
+export_summs(linear_model_p_wfire,linear_model_p_coast, error_format = "[{conf.low}, {conf.high}]", model.names = model_names, statistics = stats)
+```
+:::
+```{js echo=FALSE}
+$("#model_p_coefs").first().children().next().before('<center style="font-size:1em;font-weight:bold;">Wildfire and Coast Distance covariates</center><br>')
+$("#model_p_coefs").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 11</p>");
+```
+
+#### Main models selection:
+
+Models generation:
+
+```{r, results='hide', fig.align='center', message=FALSE}
+linear_model_1 <-lm(pm25~p_elev+p_coast+p_wfire+lc_1000+c_popden+c_poppov+c_popblack+c_pophisp,data=frm_monitors)
+linear_model_2 <-lm(pm25~p_elev+p_coast+lc_1000+c_popden+c_poppov,data=frm_monitors)
+linear_model_3 <-lm(pm25~p_elev+p_coast+lc_1000+c_popblack+c_pophisp,data=frm_monitors)
 ```
 
 Visualization of coefficients and confidence intervals:
@@ -389,12 +376,12 @@ export_summs(linear_model_1,linear_model_2,linear_model_3, error_format = "[{con
 :::
 ```{js echo=FALSE}
 $("#model_12_coefs").first().children().next().before('<center style="font-size:1em;font-weight:bold;">Preselected models</center><br>')
-$("#model_12_coefs").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 13</p>");
+$("#model_12_coefs").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 12</p>");
 ```
 
 
 ::: {#model123_coefs_plot}
-```{r model1_coefs_plot, fig.show="hold", out.width="50%", message=FALSE}
+```{r model123_coefs_plot, fig.show="hold", out.width="50%", message=FALSE}
 model_names <- c("Model 1", "Model 2", "Model 3")
 plot_coefs(linear_model_1,linear_model_2,linear_model_3, model.names = model_names, inner_ci_level = .9)
 #, coefs = c("Elevation"="elevation", "Landcover"="landcover", "Density"="density", "Poverty"="poverty", "Black Pop"="popblack", "Dist to Coast"="coast")
@@ -405,7 +392,7 @@ grid.text(label= 'Scaled' , x = unit(0.5,"npc"), y= unit(1, "npc"), just=c("cent
 :::
 ```{js echo=FALSE}
 $("#model123_coefs_plot").first().children().next().before('<center style="font-size:1em;font-weight:bold;">Models Comparison: Coefficients and Confidence Intervals</center><br>');
-$("#model123_coefs_plot").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 14</p>");
+$("#model123_coefs_plot").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 13</p>");
 
 ```
 
@@ -413,41 +400,64 @@ Additional elements of model evaluation ([more information](https://data.library
 
 ::: {#model2_analysis}
 ```{r, fig.show="hold", out.width="50%", message=FALSE}
-plot(linear_model_2)
+#plot(linear_model_2)
 ```
 :::
-```{js echo=FALSE}
+```{js eval=FALSE, include=FALSE}
 $("#model2_analysis").first().children().next().before('<center style="font-size:1em;font-weight:bold;">Model 2: Additional Analysis</center><br>');
-$("#model2_analysis").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 15</p>");
+$("#model2_analysis").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 14</p>");
 ```
 
 ::: {#model3_analysis}
-```{r, fig.show="hold", out.width="50%", message=FALSE}
-plot(linear_model_3)
+```{r fig.show="hold", message=FALSE, out.width="50%"}
+#plot(linear_model_3)
 ```
 :::
-```{js echo=FALSE}
+```{js eval=FALSE, include=FALSE}
 $("#model3_analysis").first().children().next().before('<center style="font-size:1em;font-weight:bold;">Model 3: Additional Analysis</center><br>');
-$("#model3_analysis").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 16</p>");
+$("#model3_analysis").append("<p style='text-align:right;color:gray;font-size:0.85em;'>Figure 15</p>");
 ```
 
-## Residuals
-Store and convert residuals to geodata:
-```{r, results='hide', fig.align='center', message=FALSE}
+### Universal Kriging - Residuals
+
+```{r message=FALSE}
+#Store and convert residuals to geodata:
 resid_2<-linear_model_2$residuals
 geo_monitors_resid_2<-as.geodata(cbind(geo_monitors_pm25$coords,resid_2))
 resid_3<-linear_model_3$residuals
 geo_monitors_resid_3<-as.geodata(cbind(geo_monitors_pm25$coords,resid_3))
 ```
-Preliminary visualisation of residuals:
-```{r, results='hide', fig.align='center', message=FALSE}
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+# Estimate semivariograms from data
+var_monitors_resid_2.dot <- variog(geo_monitors_resid_2)
+max_2 <- var_monitors_resid_2.dot$max.dist
+var_monitors_resid_2.dot<-variog(geo_monitors_resid_2,max.dist=max_2/2) #restricting to half the actual maximum distance
+var_monitors_resid_3.dot <- variog(geo_monitors_resid_3)
+max_3 <- var_monitors_resid_3.dot$max.dist
+var_monitors_resid_3.dot<-variog(geo_monitors_resid_3,max.dist=max_3/2) #restricting to half the actual maximum distance
+```
+```{r fig.align='center'}
+# Plot semivariogram of residuals
+plot(var_monitors_resid_2.dot,xlab="Distance (meters)",ylab="Semivariogram",pty="m", pch=4, ylim=c(0,11), col = 'blue')
+points(var_monitors_resid_3.dot$u,var_monitors_resid_3.dot$v, pch=1, ylim=c(0,11), col = 'red')
+# Original semivariogram for reference
+points(var_monitors_pm25.dot$u,var_monitors_pm25.dot$v,xlab="Distance (meters)",ylab="Semivariogram",pty="m", pch=16, ylim=c(0,11), col = 'black')
+title("Residual semivariograms for PM2.5 Models 2 & 3\n(restricted < 1/2 max distance)")
+footnote('Figure 16')
+legend(3.85e5,3,legend=c("PM2.5 data","Model2 residuals","Model3 residuals"), pch=c(16,4,1), col=c("black","blue","red"))
+```
+
+```{r eval=FALSE, fig.align='center', message=FALSE, include=FALSE, results='hide'}
+#Preliminary visualisation of residuals:
 colors <- c(rgb(253,174,107,maxColorValue=255),rgb(253,141,60,maxColorValue=255),rgb(230,85,13,maxColorValue=255),rgb(166,54,3,maxColorValue=255))
 par(oma=c(0,0,2,0))
 plot(geo_monitors_resid_2, borders=area_california, lowess = TRUE,qt.col = colors) 
 mtext("PM2.5 Monitors Residuals - Model 2", outer=TRUE,  cex=1.2, line=1)
 footnote('Figure 17')
 ```
-```{r, results='hide', fig.align='center', message=FALSE}
+```{r eval=FALSE, fig.align='center', message=FALSE, include=FALSE, results='hide'}
+#Preliminary visualisation of residuals:
 colors <- c(rgb(253,174,107,maxColorValue=255),rgb(253,141,60,maxColorValue=255),rgb(230,85,13,maxColorValue=255),rgb(166,54,3,maxColorValue=255))
 par(oma=c(0,0,2,0))
 plot(geo_monitors_resid_3, borders=area_california, lowess = TRUE,qt.col = colors) 
@@ -455,71 +465,57 @@ mtext("PM2.5 Monitors Residuals - Model 3", outer=TRUE,  cex=1.2, line=1)
 footnote('Figure 18')
 ```
 
-## Universal Kriging
+### Universal Kriging - Semivariogram adjustments (WLS & MLE)
+
 WLS - Estimate the semivariogram form the PM2.5 monitors results and then adjust a model:
 ```{r, results='hide', fig.align='center', message=FALSE}
-# Estimate semivariograms from data
-var_monitors_resid_2.dot <- variog(geo_monitors_resid_2)
-names(var_monitors_resid_2.dot)
-max_2 <- var_monitors_resid_2.dot$max.dist
-var_monitors_resid_2.dot<-variog(geo_monitors_resid_2,max.dist=max_2/2) #restricting to half the actual maximum distance
-
-var_monitors_resid_3.dot <- variog(geo_monitors_resid_3)
-names(var_monitors_resid_3.dot)
-max_3 <- var_monitors_resid_3.dot$max.dist
-var_monitors_resid_3.dot<-variog(geo_monitors_resid_3,max.dist=max_3/2) #restricting to half the actual maximum distance
-
-plot(var_monitors_resid_2.dot,xlab="Distance (meters)",ylab="Semivariogram",pty="m", pch="x", ylim=c(0,11), col = 'blue')
+plot(var_monitors_resid_2.dot,xlab="Distance (meters)",ylab="Semivariogram",pty="m", pch=4, ylim=c(0,11), col = 'blue')
 title("Residual semivariograms for PM2.5 Models 2 & 3 - WLS\n(restricted < 1/2 max distance)")
-footnote('Figure 19')
+footnote('Figure 17')
 
 # Adjust semivariogram models
 rang <-6e+04; sill<- 5; nug  <-4; psill<-sill-nug
 model<-"exponential" #"exponential" #"spherical" #"gaussian"
 var_monitors_resid_2.fit.WLS<-variofit(var_monitors_resid_2.dot,ini.cov.pars=c(psill,rang),cov.model=model,nugget=nug,weights="cressie")
-lines(var_monitors_resid_2.fit.WLS, col = 'blue', lty = "29")
+lines(var_monitors_resid_2.fit.WLS, col = 'blue', lty = 2)
 
 rang <-6e+04; sill<- 5; nug  <-4; psill<-sill-nug
 model<-"exponential" #"exponential" #"spherical" #"gaussian"
 var_monitors_resid_3.fit.WLS<-variofit(var_monitors_resid_3.dot,ini.cov.pars=c(psill,rang),cov.model=model,nugget=nug)
 
-points(var_monitors_resid_3.dot$u,var_monitors_resid_3.dot$v, pch="o", ylim=c(0,11), col = 'red')
-lines(var_monitors_resid_3.fit.WLS, col = 'red', lty = "99")
+points(var_monitors_resid_3.dot$u,var_monitors_resid_3.dot$v, pch=1, ylim=c(0,11), col = 'red')
+lines(var_monitors_resid_3.fit.WLS, col = 'red', lty = 4)
 
 # Original semivariogram for reference
 points(var_monitors_pm25.dot$u,var_monitors_pm25.dot$v,xlab="Distance (meters)",ylab="Semivariogram",pty="m", pch=16, ylim=c(0,11), col = 'black')
 lines(var_monitors_pm25.fit.WLS, col = 'black')
 
-legend(3.85e5,3,legend=c("PM2.5 data","Model2 residuals","Model3 residuals"),lty=29:99, col=c("black","blue","red"))
+legend(3.85e5,3,legend=c("PM2.5 data","Model2 residuals","Model3 residuals"),lty="1":"2":"4", col=c("black","blue","red"))
 ```
 
 MLE adjustments:
-```{r}
+```{r fig.align='center', message=FALSE, warning=FALSE, results='hide'}
+rang <-6e+04; sill<- 5; nug  <-4; psill<-sill-nug
 model<-"exponential" #"exponential" #"spherical" #"gaussian"
-rang <- 0.8e+05 #c(1.0e+05,1.1e+05,1.2e+05,1.3e+05,1.4e+05,1.5e+05)
-sill <- 10 #c(9.0,9.5,10,10.5,11)
-nug <- 0 #c(0,0.2,0.4,0.6,0.8,1)
-psill<-sill-nug
-
-X2<-data.frame(p_elev=as.vector(frm_monitors$p_elev), p_coast=as.vector(frm_monitors$p_coast), lc_1000=as.vector(frm_monitors$lc_1000), c_popden=as.vector(frm_monitors$c_popden), c_poppov=as.vector(frm_monitors$c_poppov))
-geo_monitors_pm25X2<-as.geodata(cbind(geo_monitors_pm25$coords,geo_monitors_pm25$data,X2), covar.col=4:8)
-var_monitors_2.fit.MLE<-likfit(geo_monitors_pm25X2,ini.cov.pars=c(psill,rang),nugget=nug,trend=predict(linear_model_2, geo_monitors_pm25X2))
-
-X3<-data.frame(p_elev=as.vector(frm_monitors$p_elev), p_coast=as.vector(frm_monitors$p_coast), lc_1000=as.vector(frm_monitors$lc_1000), c_popblack=as.vector(frm_monitors$c_popblack), c_pophisp=as.vector(frm_monitors$c_pophisp))
-geo_monitors_pm25X3<-as.geodata(cbind(geo_monitors_pm25$coords,geo_monitors_pm25$data,X3), covar.col=4:8)
-var_monitors_3.fit.MLE<-likfit(geo_monitors_pm25X3,ini.cov.pars=c(psill,rang),nugget=nug,trend=predict(linear_model_3, geo_monitors_pm25X3))
+var_monitors_2.fit.MLE<-likfit(geo_monitors_pm25,ini.cov.pars=c(psill,rang),nugget=nug,trend=trend.spatial(~p_elev+p_coast+lc_1000+c_popden+c_poppov,geo_monitors_pm25))
+var_monitors_3.fit.MLE<-likfit(geo_monitors_pm25,ini.cov.pars=c(psill,rang),nugget=nug,trend=trend.spatial(~p_elev+p_coast+lc_1000+c_popblack+c_pophisp,geo_monitors_pm25))
 
 plot(var_monitors_pm25.dot$u,var_monitors_pm25.dot$v,xlab="Distance (meters)",ylab="Semivariogram",pty="m", pch=16, ylim=c(0,11), col = 'black')
-points(var_monitors_resid_2.dot$u,var_monitors_resid_2.dot$v, pch="x", ylim=c(0,11), col = 'blue')
-lines(var_monitors_2.fit.MLE, col = 'blue', lty="29")
-points(var_monitors_resid_3.dot$u,var_monitors_resid_3.dot$v, pch="o", ylim=c(0,11), col = 'red')
-lines(var_monitors_3.fit.MLE, col = 'red', lty="99")
-lines(var_monitors_pm25.fit.WLS, col = 'black')
+footnote('Figure 18')
+points(var_monitors_resid_2.dot$u,var_monitors_resid_2.dot$v, pch=4, ylim=c(0,11), col = 'blue')
+lines(var_monitors_2.fit.MLE, col = 'blue', lty=2)
+points(var_monitors_resid_3.dot$u,var_monitors_resid_3.dot$v, pch=1, ylim=c(0,11), col = 'red')
+lines(var_monitors_3.fit.MLE, col = 'red', lty=4)
+lines(var_monitors_pm25.fit.MLE, col = 'black')
 
 title("Residual semivariograms for PM2.5 Models 2 & 3 - MLE\n(restricted < 1/2 max distance)")
-legend(3.85e5,3,legend=c("PM2.5 data","Model2 residuals","Model3 residuals"),lty=1:29:99, col=c("black","blue","red"))
+legend(3.85e5,3,legend=c("PM2.5 data","Model2 residuals","Model3 residuals"),lty="1":"2":"4", col=c("black","blue","red"))
 ```
 
+
+## Models performance comparison
+
+::: {#model_perf}
 ```{r include=FALSE}
 # Cross validations
 xvalid.ok.wls<-xvalid(geo_monitors_pm25,model=var_monitors_pm25.fit.WLS)
@@ -539,47 +535,102 @@ CV.uk.m3.mle<-sqrt(mean(xvalid.uk.m3.mle$error^2))
 ```
 ```{r}
 # Output all the RMSE values and compare them 
-RMSE <- data.frame(c("CV.ok.wls", "CV.ok.mle", "CV.uk.m2.wls", "CV.uk.m2.mle", "CV.uk.m3.wls", "CV.uk.m3.mle"), 
+RMSE <- data.frame(c("OK.WLS", "OK.MLE", "UK.Model2.WLS", "UK.Model2.MLE", "UK.Model3.WLS", "UK.Model3.MLE"), 
                    c(CV.ok.wls, CV.ok.mle, CV.uk.m2.wls, CV.uk.m2.mle, CV.uk.m3.wls, CV.uk.m3.mle))
 names(RMSE) <- c("Model", "RMSE")
 RMSE
+
+gls2<-cbind(Estimate=round(var_monitors_2.fit.MLE$beta, digits=3), SE = round(sqrt(diag(var_monitors_2.fit.MLE$beta.var)), digits=3), CI= 
+             paste("[",round(var_monitors_2.fit.MLE$beta-1.96*sqrt(diag(var_monitors_2.fit.MLE$beta.var)), digits=3),";",round(var_monitors_2.fit.MLE$beta+1.96*sqrt(diag(var_monitors_2.fit.MLE$beta.var)), digits=3),"]"))
+row.names(gls2)<-c("Intercept","p_elev","p_coast","lc_1000_1","lc_1000_2","c_popden","c_poppov")
+gls2
+
+gls3<-cbind(Estimate=round(var_monitors_3.fit.MLE$beta, digits=3), SE = round(sqrt(diag(var_monitors_3.fit.MLE$beta.var)), digits=3), CI= 
+             paste("[",round(var_monitors_3.fit.MLE$beta-1.96*sqrt(diag(var_monitors_3.fit.MLE$beta.var)), digits=3),";",round(var_monitors_3.fit.MLE$beta+1.96*sqrt(diag(var_monitors_3.fit.MLE$beta.var)), digits=3),"]"))
+row.names(gls3)<-c("Intercept","p_elev","p_coast","lc_1000_1","lc_1000_2","c_popblack","c_pophisp")
+gls3
+```
+:::
+
+## PM(2.5) Predictions
+
+### Preparation
+
+Find out the maximum and minium extents of our data to create a grid of locations to predict at
+```{r ok_grid, results='hide', warning=FALSE}
+x_min <- min(area_california[,1])
+x_max <- max(area_california[,1])
+y_min <- min(area_california[,2])
+y_max <- max(area_california[,2])
+
+b_grid1<-expand.grid(easting=seq(x_min-1000,x_max+1000,len=100),northing=seq(y_min-10000,y_max+1000,len=100))
+b_grid2<-pip(b_grid1,area_california)
+frm_predictions_grid<- as.data.frame(b_grid2)
+```
+
+Plot to make sure that the layers all overlay nicely:
+```{r ok_check1, results='hide', fig.align='center'}
+plot(shp_california)
+points(frm_predictions_grid, col="blue", pch='.')
+points(shp_monitors, col = 'red', pch=1)
+title("Layers check 1")
+footnote('Figure 20')
+```
+```{r ok_check2, results='hide', fig.align='center'}
+plot(shp_california)
+points(frm_predictions_filtered, col="blue", pch='.')
+points(shp_monitors, col = 'red', pch=1)
+title("Layers check 2")
+footnote('Figure 21')
+```
+
+### Ordniary Kriging perdictions
+
+Predict values for WLS-adjusted model:
+```{r ok_predict_WLS, results='hide', fig.align='center'}
+predictions.OK.WLS<-krige.conv(geo_monitors_pm25,locations=frm_predictions_grid,krige=krige.control(obj.model=var_monitors_pm25.fit.WLS))
+```
+
+Predict values for MLE-adjusted models:
+```{r ok_predict_MLE, results='hide', fig.align='center'}
+predictions.OK.MLE<-krige.conv(geo_monitors_pm25,locations=frm_predictions_grid,krige=krige.control(obj.model=var_monitors_pm25.fit.MLE))
+```
+
+### Universal Kriging predictions
+
+Grid for prediction:
+```{r}
+n_min <- min(frm_predictions_filtered$northing)
+e_min <- min(frm_predictions_filtered$easting)
+temp <- frm_predictions_filtered %>% filter((((northing - n_min + 5000)/10000)%%1==0 ))
+frm_predictions_reduced <- temp %>% filter(((easting - e_min + 5000)/10000)%%1==0 |((easting - 4898.9343)/10000)%%1==0)
+grid <- data.frame(frm_predictions_reduced$easting,frm_predictions_reduced$northing)
+names(grid) <- c("easting","northing")
 ```
 
 Predict values for WLS-adjusted models:
 ```{r, results='hide', fig.align='center', message=FALSE}
-predictions.UK.M2<-krige.conv(geo_monitors_pm25,locations=frm_predictions_grid, krige=krige.control(obj.model=var_monitors_resid_2.fit.WLS, trend.d=predict(linear_model_2, frm_monitors, interval = "prediction"), trend.l=predict(linear_model_2, frm_predictions_filtered, interval = "prediction")))
-predictions.UK.M3<-krige.conv(geo_monitors_pm25,locations=frm_predictions_grid, krige=krige.control(obj.model=var_monitors_resid_3.fit.WLS, trend.d=predict(linear_model_3, frm_monitors, interval = "prediction"), trend.l=predict(linear_model_3, frm_predictions_filtered, interval = "prediction")))
+predictions.UK.M2.WLS<-krige.conv(geo_monitors_pm25,locations=grid, krige=krige.control(obj.model=var_monitors_resid_2.fit.WLS, trend.d=trend.spatial(~p_elev+p_coast+lc_1000+c_popden+c_poppov,geo_monitors_pm25), trend.l=trend.spatial(~p_elev+p_coast+lc_1000+c_popden+c_poppov,geo_monitors_pm25)))
+predictions.UK.M3.WLS<-krige.conv(geo_monitors_pm25,locations=grid, krige=krige.control(obj.model=var_monitors_resid_3.fit.WLS, trend.d=trend.spatial(~p_elev+p_coast+lc_1000+c_popblack+c_pophisp,geo_monitors_pm25), trend.l=trend.spatial(~p_elev+p_coast+lc_1000+c_popblack+c_pophisp,geo_monitors_pm25)))
 ```
 
 Predict values for MLE-adjusted models:
 
-<span style="color: red;">THIS IS NOT WORKING: IT SEEMS THERE IS A PROBLEM AT USING THE MLE-FITTED MODEL TO PERFORM KRIGING (krige.control function). THE ISSUE MIGHT HAVE TO DO WITH DATATYPE BUT HAS NOT BEEN RESOLVED YET.</span>
+```{r}
+krige.M2 <- krige.control(obj.model=var_monitors_2.fit.MLE, 
+                      trend.d = trend.spatial(~p_elev+p_coast+lc_1000+c_popden+c_poppov, geo_monitors_pm25), 
+                      trend.l = trend.spatial(~p_elev+p_coast+lc_1000+c_popden+c_poppov, frm_predictions_reduced)
+                      )
+krige.M3 <- krige.control(obj.model=var_monitors_3.fit.MLE, 
+                      trend.d = trend.spatial(~p_elev+p_coast+lc_1000+c_popblack+c_pophisp, geo_monitors_pm25), 
+                      trend.l = trend.spatial(~p_elev+p_coast+lc_1000+c_popblack+c_pophisp, frm_predictions_reduced)
+                      )
 
-```{r eval=FALSE, fig.align='center', message=FALSE, include=FALSE, results='hide'}
-gX2<-data.frame(p_elev=as.vector(frm_predictions_sample$p_elev), p_coast=as.vector(frm_predictions_sample$p_coast), lc_1000=as.vector(frm_predictions_sample$lc_1000), c_popden=as.vector(frm_predictions_sample$c_popden), c_poppov=as.vector(frm_predictions_sample$c_poppov))
-geo_predictions_gridX2<-as.geodata(frm_predictions_sample, covar.col=3:7)
-#gX3<-data.frame(p_elev=as.vector(frm_predictions_filtered$p_elev), p_coast=as.vector(frm_predictions_filtered$p_coast), lc_1000=as.vector(frm_predictions_filtered$lc_1000), c_popblack=as.vector(frm_predictions_filtered$c_popblack), c_pophisp=as.vector(frm_predictions_filtered$c_pophisp))
-
-#mX2<-predict(linear_model_2, frm_monitors, interval = "prediction")
-#geo_monitors_pm25X2<-as.geodata(cbind(geo_monitors_pm25$coords,mX2))
-#pX2<-predict(linear_model_2, frm_predictions_filtered, interval = "prediction")
-#geo_predictions_gridX2<-as.geodata(cbind(geo_predictions_elev$coords,pX2))
-
-predict(linear_model_2, frm_monitors, interval = "prediction")
-predict(linear_model_2, geo_monitors_pm25X2, interval = "prediction")
-predict(linear_model_2, geo_predictions_gridX2, interval = "prediction")
-
-frm_predictions_filtered[sample(nrow(frm_predictions_filtered),1000),]
-test <- krige.control(obj.model=var_monitors_2.fit.MLE, trend.d = predict(linear_model_2, frm_monitors, interval = "prediction"), trend.l = predict(linear_model_2, frm_predictions_filtered[sample(nrow(frm_predictions_filtered),1000),], interval = "prediction"))
-test <- krige.control(obj.model=var_monitors_2.fit.MLE, trend.d = predict(linear_model_2, geo_monitors_pm25X2, interval = "prediction"), trend.l = predict(linear_model_2, geo_predictions_gridX2, interval = "prediction"))
-predictions.UK.M2.MLE<-krige.conv(geo_monitors_pm25X2,locations=frm_predictions_grid, krige= test)
-
-geo_predictions_gridX3<-as.geodata(cbind(geo_predictions_elev$coords,gX3), covar.col=3:7)
-
-predictions.UK.M2.MLE<-krige.conv(geo_monitors_pm25X2,locations=frm_predictions_grid, krige=krige.control(obj.model=var_monitors_2.fit.MLE, trend.d=geo_monitors_pm25X2, trend.l=geo_predictions_gridX2))
-
-predictions.UK.M3.MLE<-krige.conv(geo_monitors_pm25X3,locations=frm_predictions_grid, krige=krige.control(obj.model=var_monitors_3.fit.MLE, trend.d=predict(geo_monitors_pm25X3, frm_monitors, interval = "prediction"), trend.l=predict(linear_model_3, geo_predictions_gridX3, interval = "prediction")))
+predictions.UK.M2.MLE<-krige.conv(geo_monitors_pm25,locations=grid, krige=krige.M2)
+predictions.UK.M3.MLE<-krige.conv(geo_monitors_pm25,locations=grid, krige=krige.M3)
 ```
+
+### WLS-adjusted models visualizations
 
 Visualize the Universal Kriging and compare with Ordinary Kriging - WLS adjustments
 ```{r, results='hide', message=FALSE, fig.show="hold", out.width="50%"}
@@ -590,7 +641,7 @@ ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you a
   scale_fill_gradient(low = "white", high="red", limits=c(3,16)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
-  ggtitle('Ordinary Kriged Predictions') + # add a title
+  ggtitle('Ordinary Kriged Predictions - WLS') + labs(fill = "PM2.5\n(μg/m3)") + # add a title
   theme(plot.title = element_text(hjust = 0.5))
 footnote('Figure 20')
 # OK - WLS - Erros
@@ -600,67 +651,68 @@ ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you a
   scale_fill_gradient(low = "white", high="orange", limits=c(0,3.5)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
-  ggtitle('Ordinary Kriged Standard Errors') + # add a title
-  theme(plot.title = element_text(hjust = 0.5))
+  ggtitle('Ordinary Kriged Standard Errors - WLS') + # add a title
+  theme(plot.title = element_text(hjust = 0.5)) + labs(fill = "SE")
 footnote('Figure 21')
 
 # UK - Model2 - WLS - Predictions
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
-  geom_tile(aes(fill=predictions.UK.M2$predict)) +   # fill the grid with the predictions.UK.M2$predict values
+ggplot(grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
+  geom_tile(aes(fill=predictions.UK.M2.WLS$predict)) +   # fill the grid with the predictions.UK.M2$predict values
   coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
   scale_fill_gradient(low = "white", high="red", limits=c(3,16)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
   ggtitle('Universally Kriged Predictions - Model 2 - WLS') + # add a title
-  theme(plot.title = element_text(hjust = 0.5)) # centres the title
+  theme(plot.title = element_text(hjust = 0.5)) + labs(fill = "PM2.5\n(μg/m3)") # centres the title
 footnote('Figure 22')
 # UK - Model2 - WLS - Erros
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
-  geom_tile(aes(fill=sqrt(predictions.UK.M2$krige.var))) +   # fill the grid with the krige.ok$krige.var values
+ggplot(grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
+  geom_tile(aes(fill=sqrt(predictions.UK.M2.WLS$krige.var))) +   # fill the grid with the krige.ok$krige.var values
   coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
   scale_fill_gradient(low = "white", high="orange", limits=c(0,3.5)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
   ggtitle('Universally Kriged Standard Errors - Model 2 - WLS') + # add a title
-  theme(plot.title = element_text(hjust = 0.5)) # centres the title
+  theme(plot.title = element_text(hjust = 0.5)) + labs(fill = "SE") # centres the title
 footnote('Figure 23')
 
 # UK - Model3 - WLS - Predictions
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
-  geom_tile(aes(fill=predictions.UK.M3$predict)) +   # fill the grid with the predictions.UK.M3$predict values
+ggplot(grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
+  geom_tile(aes(fill=predictions.UK.M3.WLS$predict)) +   # fill the grid with the predictions.UK.M3$predict values
   coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
   scale_fill_gradient(low = "white", high="red", limits=c(3,16)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
   ggtitle('Universally Kriged Predictions - Model 3 - WLS') + # add a title
-  theme(plot.title = element_text(hjust = 0.5)) # centres the title
+  theme(plot.title = element_text(hjust = 0.5)) + labs(fill = "PM2.5\n(μg/m3)") # centres the title
 footnote('Figure 24')
 # UK - Model3 - WLS - Erros
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
-  geom_tile(aes(fill=sqrt(predictions.UK.M3$krige.var))) +   # fill the grid with the krige.ok$krige.var values
+ggplot(grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
+  geom_tile(aes(fill=sqrt(predictions.UK.M3.WLS$krige.var))) +   # fill the grid with the krige.ok$krige.var values
   coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
   scale_fill_gradient(low = "white", high="orange", limits=c(0,3.5)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
   ggtitle('Universally Kriged Standard Errors - Model 3 - WLS') + # add a title
-  theme(plot.title = element_text(hjust = 0.5)) # centres the title
+  theme(plot.title = element_text(hjust = 0.5)) + labs(fill = "SE") # centres the title
 footnote('Figure 25')
 ```
 
+
+### MLE-adjusted models visualizations
+
 Visualize the Universal Kriging and compare with Ordinary Kriging - MLE adjustments
 
-<span style="color: red;">THIS IS NOT WORKING: THIS IS A CONSEQUENCE OF THE PROBLEM AT USING THE MLE-FITTED MODEL TO PERFORM KRIGING: THE MLE-FITED MODEL PREDICTIONS CANNOT BE VISUALISED.</span>
-
-```{r eval=FALSE, fig.show="hold", message=FALSE, include=FALSE, out.width="50%", results='hide'}
+```{r, results='hide', message=FALSE, fig.show="hold", out.width="50%"}
 # OK - MLE - Predictions
 ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
   geom_tile(aes(fill=predictions.OK.MLE$predict)) +   # fill the grid with the predictions.OK$predict values
   coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
-  scale_fill_gradient(low = "white", high="red", limits=c(3,16)) + # set the color scale to range from red to yellow
+  scale_fill_gradient(low = "white", high="red", limits=c(1,18)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
-  ggtitle('Ordinary Kriged Predictions') + # add a title
-  theme(plot.title = element_text(hjust = 0.5))
+  ggtitle('Ordinary Kriged Predictions - MLE') + # add a title
+  theme(plot.title = element_text(hjust = 0.5)) + labs(fill = "PM2.5\n(μg/m3)")
 footnote('Figure 26')
 # OK - MLE - Erros
 ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
@@ -669,49 +721,61 @@ ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you a
   scale_fill_gradient(low = "white", high="orange", limits=c(0,3.5)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
-  ggtitle('Ordinary Kriged Standard Errors') + # add a title
-  theme(plot.title = element_text(hjust = 0.5))
+  ggtitle('Ordinary Kriged Standard Errors - MLE') + # add a title
+  theme(plot.title = element_text(hjust = 0.5)) + labs(fill = "SE")
 footnote('Figure 27')
 
 # UK - Model2 - MLE - Predictions
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
+ggplot(grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
   geom_tile(aes(fill=predictions.UK.M2.MLE$predict)) +   # fill the grid with the predictions.UK.M2$predict values
   coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
-  scale_fill_gradient(low = "white", high="red", limits=c(3,16)) + # set the color scale to range from red to yellow
+  scale_fill_gradient(low = "white", high="red", limits=c(1,18)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
   ggtitle('Universally Kriged Predictions - Model 2 - MLE') + # add a title
-  theme(plot.title = element_text(hjust = 0.5)) # centres the title
+  theme(plot.title = element_text(hjust = 0.5))  + labs(fill = "PM2.5\n(μg/m3)") # centres the title
 footnote('Figure 28')
 # UK - Model2 - MLE - Erros
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
+ggplot(grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
   geom_tile(aes(fill=sqrt(predictions.UK.M2.MLE$krige.var))) +   # fill the grid with the krige.ok$krige.var values
   coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
   scale_fill_gradient(low = "white", high="orange", limits=c(0,3.5)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
   ggtitle('Universally Kriged Standard Errors - Model 2 - MLE') + # add a title
-  theme(plot.title = element_text(hjust = 0.5)) # centres the title
+  theme(plot.title = element_text(hjust = 0.5))  + labs(fill = "SE") # centres the title
 footnote('Figure 29')
 
 # UK - Model3 - MLE - Predictions
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
+ggplot(grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
   geom_tile(aes(fill=predictions.UK.M3.MLE$predict)) +   # fill the grid with the predictions.UK.M3$predict values
   coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
-  scale_fill_gradient(low = "white", high="red", limits=c(3,16)) + # set the color scale to range from red to yellow
+  scale_fill_gradient(low = "white", high="red", limits=c(1,18)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
   ggtitle('Universally Kriged Predictions - Model 3 - MLE') + # add a title
-  theme(plot.title = element_text(hjust = 0.5)) # centres the title
+  theme(plot.title = element_text(hjust = 0.5))  + labs(fill = "PM2.5\n(μg/m3)") # centres the title
 footnote('Figure 30')
 # UK - Model3 - MLE - Erros
-ggplot(frm_predictions_grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
+ggplot(grid, aes(x=easting, y=northing)) +  # signify that you are predicting for the entire grid
   geom_tile(aes(fill=sqrt(predictions.UK.M3.MLE$krige.var))) +   # fill the grid with the krige.ok$krige.var values
   coord_equal() + # indicate that the X and Y coordinates you are plotting are on the same scale
   scale_fill_gradient(low = "white", high="orange", limits=c(0,3.5)) + # set the color scale to range from red to yellow
   geom_point(data = shp_monitors@data, aes(x = POINT_X, y = POINT_Y), pch=1) + # add the PM2.5 Monitor locations to the plot
   geom_polygon(data = fortify(shp_california), aes(x = shp_california@polygons[[1]]@Polygons[[1]]@coords[,1], y = shp_california@polygons[[1]]@Polygons[[1]]@coords[,2], group = group), fill = NA, colour = 'black') + # add the states
   ggtitle('Universally Kriged Standard Errors - Model 3 - MLE') + # add a title
-  theme(plot.title = element_text(hjust = 0.5)) # centres the title
+  theme(plot.title = element_text(hjust = 0.5))  + labs(fill = "SE") # centres the title
 footnote('Figure 31')
+output<- cbind(grid, predictions.UK.M2.MLE$predict, sqrt(predictions.UK.M2.MLE$krige.var))
+write.csv(output, 'output.csv')
+```
+
+### Export results
+```{r}
+output<- cbind(frm_predictions_grid, predictions.OK.MLE$predict, sqrt(predictions.OK.MLE$krige.var))
+write.csv(output, 'output_OK.csv')
+output<- cbind(grid, predictions.UK.M2.MLE$predict, sqrt(predictions.UK.M2.MLE$krige.var))
+write.csv(output, 'output_UK_M2.csv')
+output<- cbind(grid, predictions.UK.M3.MLE$predict, sqrt(predictions.UK.M3.MLE$krige.var))
+write.csv(output, 'output_UK_M3.csv')
 ```
